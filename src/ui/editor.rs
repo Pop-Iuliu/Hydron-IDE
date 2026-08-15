@@ -41,6 +41,28 @@ impl EditorView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let is_ctrl_or_cmd =
+            event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+
+        if is_ctrl_or_cmd && event.keystroke.key == "z" {
+            self.buffer.update(cx, |buffer, _cx| {
+                if let Some(new_cursor_pos) = buffer.undo() {
+                    self.cursor_offset = new_cursor_pos;
+                }
+            });
+            cx.notify();
+            return;
+        }
+
+        if event.keystroke.key == "space" {
+            self.buffer.update(cx, |buffer, _cx| {
+                buffer.insert(self.cursor_offset, " ");
+            });
+            self.cursor_offset += 1;
+            cx.notify();
+            return;
+        }
+
         let key = event.keystroke.key.as_str();
 
         let max_len = self.buffer.read(cx).text.chars().count();
@@ -187,8 +209,23 @@ impl Render for EditorView {
         let lines: Vec<&str> = content.split('\n').collect();
 
         for (line_idx, line_str) in lines.into_iter().enumerate() {
-            let mut line_element = div().flex().flex_row().items_center().h(px(24.0));
+            // gutter
+            let line_number_ui = div()
+                .w(px(45.0))
+                .flex_shrink_0()
+                .text_color(rgb(0x6c7086))
+                .flex()
+                .justify_end()
+                .pr(px(16.0))
+                .child((line_idx + 1).to_string());
 
+            // container pt intreg randul
+            let mut line_element = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .h(px(24.0))
+                .child(line_number_ui);
             if line_idx == cursor_line {
                 let byte_idx = line_str
                     .char_indices()
@@ -235,6 +272,14 @@ impl Render for EditorView {
                 filename,
                 if is_dirty { "*" } else { "" }
             )))
-            .child(div().flex_1().p_4().child(text_container))
+            .child(
+                div()
+                    .id("scrollable_text_area")
+                    .flex_1()
+                    .w_full()
+                    .overflow_y_scroll()
+                    .py_4()
+                    .child(text_container),
+            )
     }
 }
