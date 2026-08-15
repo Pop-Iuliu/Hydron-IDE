@@ -1,0 +1,16 @@
+[package]
+name = "hydron"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui = "0.2.2"
+
+ropey = "1.6"
+
+ignore = "0.4"
+
+anyhow = "1.0"
+
+[profile.dev.package."*"]
+opt-level = 3
