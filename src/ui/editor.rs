@@ -68,9 +68,7 @@ impl EditorView {
                 new_offset += 1;
             }
             "left" => {
-                if new_offset > 0 {
-                    new_offset -= 1;
-                }
+                new_offset = new_offset.saturating_sub(1);
             }
             "right" => {
                 if new_offset < max_len {
@@ -169,17 +167,57 @@ impl Render for EditorView {
             .unwrap_or("Untitled")
             .to_string();
 
-        let mut display_content = content.clone();
-        if self.cursor_offset <= display_content.chars().count() {
-            let byte_idx = display_content
-                .char_indices()
-                .nth(self.cursor_offset)
-                .map(|(i, _)| i)
-                .unwrap_or(display_content.len());
-            display_content.insert_str(byte_idx, "|");
+        let mut cursor_line = 0;
+        let mut cursor_col = 0;
+
+        for (i, c) in content.char_indices() {
+            if i == self.cursor_offset {
+                break;
+            }
+            if c == '\n' {
+                cursor_line += 1;
+                cursor_col = 0;
+            } else {
+                cursor_col += 1;
+            }
+        }
+
+        let mut text_container = div().flex().flex_col().w_full();
+
+        let lines: Vec<&str> = content.split('\n').collect();
+
+        for (line_idx, line_str) in lines.into_iter().enumerate() {
+            let mut line_element = div().flex().flex_row().items_center().h(px(24.0));
+
+            if line_idx == cursor_line {
+                let byte_idx = line_str
+                    .char_indices()
+                    .nth(cursor_col)
+                    .map(|(i, _)| i)
+                    .unwrap_or(line_str.len());
+                let (before, after) = line_str.split_at(byte_idx);
+
+                let cursor_ui = div()
+                    .w(px(2.0))
+                    .h(px(18.0))
+                    .bg(rgb(0x89b4fa))
+                    .ml(px(-1.0))
+                    .mr(px(-1.0));
+
+                line_element = line_element
+                    .child(before.to_string())
+                    .child(cursor_ui)
+                    .child(after.to_string());
+            } else {
+                let display_text = if line_str.is_empty() { " " } else { line_str };
+                line_element = line_element.child(display_text.to_string());
+            }
+
+            text_container = text_container.child(line_element);
         }
 
         div()
+            .id("editor_main")
             .flex()
             .flex_col()
             .size_full()
@@ -189,13 +227,14 @@ impl Render for EditorView {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::handle_save))
             .on_key_down(cx.listener(Self::handle_key_down))
+            .on_click(cx.listener(|this, _event, window, _cx| {
+                window.focus(&this.focus_handle);
+            }))
             .child(div().p_2().bg(rgb(0x181825)).text_sm().child(format!(
                 "{} {}",
                 filename,
                 if is_dirty { "*" } else { "" }
             )))
-            .child(
-                div().flex_1().p_4().child(display_content), // overlay the cursor gen
-            )
+            .child(div().flex_1().p_4().child(text_container))
     }
 }
