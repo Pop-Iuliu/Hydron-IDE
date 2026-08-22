@@ -12,5 +12,9 @@ ignore = "0.4"
 
 anyhow = "1.0"
 
+tree-sitter = "0.26.12"
+
+tree-sitter-rust = "0.24.2"
+
 [profile.dev.package."*"]
 opt-level = 3

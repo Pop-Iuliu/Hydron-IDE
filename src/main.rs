@@ -1,5 +1,6 @@
 mod buffer;
 mod fs;
+mod syntax;
 mod ui;
 
 use gpui::*;

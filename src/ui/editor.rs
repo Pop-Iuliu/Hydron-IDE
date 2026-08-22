@@ -1,4 +1,5 @@
 use crate::buffer::Buffer;
+use crate::syntax::{Highlighter, TokenType};
 use gpui::*;
 
 actions!(editor, [Save]);
@@ -8,6 +9,7 @@ pub struct EditorView {
     focus_handle: FocusHandle,
     cursor_offset: usize,
     pub selection_anchor: Option<usize>,
+    pub highlighter: Highlighter,
 }
 
 impl EditorView {
@@ -24,6 +26,7 @@ impl EditorView {
             focus_handle,
             cursor_offset: 0,
             selection_anchor: None,
+            highlighter: Highlighter::new(),
         }
     }
 
@@ -260,18 +263,37 @@ impl Render for EditorView {
             .to_string();
 
         let selection = self.selection_range();
-
         let sel_start = selection.as_ref().map(|r| r.start).unwrap_or(usize::MAX);
         let sel_end = selection.as_ref().map(|r| r.end).unwrap_or(usize::MAX);
 
         let mut text_container = div().flex().flex_col().w_full();
-        let lines: Vec<&str> = content.split('\n').collect();
 
+        let content = self.buffer.read(cx).text.to_string();
+        let tokens = self.highlighter.parse_text(&content);
+
+        let get_color = |t: TokenType| -> gpui::Rgba {
+            match t {
+                TokenType::Keyword => rgb(0xcba6f7),
+                TokenType::Function => rgb(0x8caaee),
+                TokenType::Type => rgb(0xf9e2af),
+                TokenType::String => rgb(0xa6e3a1),
+                TokenType::Number => rgb(0xfab387),
+                TokenType::Comment => rgb(0x6c7086),
+                TokenType::Unknown => rgb(0xcdd6f4),
+                _ => rgb(0xcdd6f4),
+            }
+        };
+
+        let lines: Vec<&str> = content.split('\n').collect();
+        let mut current_byte_idx = 0;
         let mut current_char_idx = 0;
 
         for (line_idx, line_str) in lines.into_iter().enumerate() {
             let line_char_count = line_str.chars().count();
-            let line_end_idx = current_char_idx + line_char_count;
+            let line_byte_count = line_str.len();
+
+            let line_char_end = current_char_idx + line_char_count;
+            let line_byte_end = current_byte_idx + line_byte_count;
 
             let line_number_ui = div()
                 .w(px(45.0))
@@ -291,13 +313,14 @@ impl Render for EditorView {
 
             if line_str.is_empty() {
                 if self.cursor_offset == current_char_idx {
-                    let cursor_ui = div()
-                        .w(px(2.0))
-                        .h(px(18.0))
-                        .bg(rgb(0x89b4fa))
-                        .ml(px(-1.0))
-                        .mr(px(-1.0));
-                    line_content = line_content.child(cursor_ui);
+                    line_content = line_content.child(
+                        div()
+                            .w(px(2.0))
+                            .h(px(18.0))
+                            .bg(rgb(0x89b4fa))
+                            .ml(px(-1.0))
+                            .mr(px(-1.0)),
+                    );
                 } else if current_char_idx >= sel_start && current_char_idx < sel_end {
                     line_content =
                         line_content.child(div().w(px(8.0)).h(px(18.0)).bg(rgb(0x45475a)));
@@ -305,51 +328,69 @@ impl Render for EditorView {
                     line_content = line_content.child(" ");
                 }
             } else {
-                let mut split_points = vec![0, line_char_count];
+                let line_tokens: Vec<_> = tokens
+                    .iter()
+                    .filter(|t| t.start_byte < line_byte_end && t.end_byte > current_byte_idx)
+                    .collect();
 
-                if self.cursor_offset > current_char_idx && self.cursor_offset < line_end_idx {
-                    split_points.push(self.cursor_offset - current_char_idx);
+                let mut split_points = vec![0, line_byte_count];
+
+                if self.cursor_offset > current_char_idx
+                    && self.cursor_offset < line_char_end
+                    && let Some((byte_offset, _)) = line_str
+                        .char_indices()
+                        .nth(self.cursor_offset - current_char_idx)
+                {
+                    split_points.push(byte_offset);
                 }
-                if sel_start > current_char_idx && sel_start < line_end_idx {
-                    split_points.push(sel_start - current_char_idx);
-                }
-                if sel_end > current_char_idx && sel_end < line_end_idx {
-                    split_points.push(sel_end - current_char_idx);
+
+                for t in &line_tokens {
+                    let start_local = t.start_byte.saturating_sub(current_byte_idx);
+                    let end_local = t.end_byte.saturating_sub(current_byte_idx);
+                    if start_local > 0 && start_local < line_byte_count {
+                        split_points.push(start_local);
+                    }
+                    if end_local > 0 && end_local < line_byte_count {
+                        split_points.push(end_local);
+                    }
                 }
 
                 split_points.sort();
                 split_points.dedup();
 
                 for window in split_points.windows(2) {
-                    let start_char = window[0];
-                    let end_char = window[1];
-                    let global_start = current_char_idx + start_char;
-
-                    if global_start == self.cursor_offset {
-                        let cursor_ui = div()
-                            .w(px(2.0))
-                            .h(px(18.0))
-                            .bg(rgb(0x89b4fa))
-                            .ml(px(-1.0))
-                            .mr(px(-1.0));
-                        line_content = line_content.child(cursor_ui);
-                    }
-
-                    let byte_start = line_str
-                        .char_indices()
-                        .nth(start_char)
-                        .map(|(b, _)| b)
-                        .unwrap_or(line_str.len());
-                    let byte_end = line_str
-                        .char_indices()
-                        .nth(end_char)
-                        .map(|(b, _)| b)
-                        .unwrap_or(line_str.len());
+                    let byte_start = window[0];
+                    let byte_end = window[1];
                     let segment_text = &line_str[byte_start..byte_end];
 
-                    let is_selected = global_start >= sel_start && global_start < sel_end;
-                    let mut text_ui = div().child(segment_text.to_string());
+                    let local_char_start = line_str[..byte_start].chars().count();
+                    let global_char_start = current_char_idx + local_char_start;
 
+                    if global_char_start == self.cursor_offset {
+                        line_content = line_content.child(
+                            div()
+                                .w(px(2.0))
+                                .h(px(18.0))
+                                .bg(rgb(0x89b4fa))
+                                .ml(px(-1.0))
+                                .mr(px(-1.0)),
+                        );
+                    }
+
+                    let mut current_color = rgb(0xcdd6f4);
+                    for t in &line_tokens {
+                        let t_start = t.start_byte.saturating_sub(current_byte_idx);
+                        let t_end = t.end_byte.saturating_sub(current_byte_idx);
+                        if byte_start >= t_start && byte_end <= t_end {
+                            current_color = get_color(t.token_type);
+                            break;
+                        }
+                    }
+
+                    let is_selected = global_char_start >= sel_start && global_char_start < sel_end;
+                    let mut text_ui = div()
+                        .child(segment_text.to_string())
+                        .text_color(current_color);
                     if is_selected {
                         text_ui = text_ui.bg(rgb(0x45475a));
                     }
@@ -357,19 +398,21 @@ impl Render for EditorView {
                     line_content = line_content.child(text_ui);
                 }
 
-                if self.cursor_offset == line_end_idx {
-                    let cursor_ui = div()
-                        .w(px(2.0))
-                        .h(px(18.0))
-                        .bg(rgb(0x89b4fa))
-                        .ml(px(-1.0))
-                        .mr(px(-1.0));
-                    line_content = line_content.child(cursor_ui);
+                if self.cursor_offset == line_char_end {
+                    line_content = line_content.child(
+                        div()
+                            .w(px(2.0))
+                            .h(px(18.0))
+                            .bg(rgb(0x89b4fa))
+                            .ml(px(-1.0))
+                            .mr(px(-1.0)),
+                    );
                 }
             }
 
             text_container = text_container.child(line_content);
 
+            current_byte_idx += line_byte_count + 1;
             current_char_idx += line_char_count + 1;
         }
 
