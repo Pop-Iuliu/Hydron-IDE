@@ -10,6 +10,7 @@ pub struct EditorView {
     cursor_offset: usize,
     pub selection_anchor: Option<usize>,
     pub highlighter: Highlighter,
+    pub scroll_handle: gpui::ScrollHandle,
 }
 
 impl EditorView {
@@ -27,6 +28,7 @@ impl EditorView {
             cursor_offset: 0,
             selection_anchor: None,
             highlighter: Highlighter::new(),
+            scroll_handle: gpui::ScrollHandle::default(),
         }
     }
 
@@ -234,6 +236,36 @@ impl EditorView {
             }
         }
         self.cursor_offset = new_offset;
+        let text = self.buffer.read(cx).text.to_string();
+        let cursor_line = text
+            .chars()
+            .take(self.cursor_offset)
+            .filter(|&c| c == '\n')
+            .count();
+
+        let line_height = 24.0;
+        let cursor_top = cursor_line as f32 * line_height;
+        let cursor_bottom = cursor_top + line_height;
+
+        let offset_y_px = self.scroll_handle.offset().y;
+        let current_scroll_y = -f32::from(offset_y_px);
+
+        let scroll_margin = 3.0 * line_height;
+
+        let viewport_height = 800.0;
+
+        let mut new_scroll_y = current_scroll_y;
+
+        if cursor_top < current_scroll_y + scroll_margin {
+            new_scroll_y = (cursor_top - scroll_margin).max(0.0);
+        } else if cursor_bottom > current_scroll_y + viewport_height - scroll_margin {
+            new_scroll_y = cursor_bottom - viewport_height + scroll_margin;
+        }
+
+        if new_scroll_y != current_scroll_y {
+            self.scroll_handle
+                .set_offset(gpui::point(px(0.0), px(-new_scroll_y)));
+        }
         cx.notify();
     }
 
@@ -441,6 +473,7 @@ impl Render for EditorView {
                     .flex_1()
                     .w_full()
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
                     .py_4()
                     .child(text_container),
             )
