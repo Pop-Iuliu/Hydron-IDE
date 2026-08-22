@@ -7,6 +7,7 @@ pub struct EditorView {
     pub buffer: Entity<Buffer>,
     focus_handle: FocusHandle,
     cursor_offset: usize,
+    pub selection_anchor: Option<usize>,
 }
 
 impl EditorView {
@@ -22,6 +23,7 @@ impl EditorView {
             buffer,
             focus_handle,
             cursor_offset: 0,
+            selection_anchor: None,
         }
     }
 
@@ -54,6 +56,50 @@ impl EditorView {
             return;
         }
 
+        if is_ctrl_or_cmd && event.keystroke.key == "c" {
+            if let Some(range) = self.selection_range() {
+                let text = self.buffer.read(cx).text.slice(range).to_string();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+            }
+            return;
+        }
+
+        if is_ctrl_or_cmd && event.keystroke.key == "x" {
+            if let Some(range) = self.selection_range() {
+                let text = self.buffer.read(cx).text.slice(range.clone()).to_string();
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+
+                self.buffer.update(cx, |buffer, _cx| {
+                    buffer.remove(range.clone());
+                });
+                self.cursor_offset = range.start;
+                self.selection_anchor = None;
+                cx.notify();
+            }
+            return;
+        }
+
+        if is_ctrl_or_cmd && event.keystroke.key == "v" {
+            if let Some(clipboard_item) = cx.read_from_clipboard()
+                && let Some(text) = clipboard_item.text()
+            {
+                let selection = self.selection_range();
+                let mut current_offset = self.cursor_offset;
+                self.buffer.update(cx, |buffer, _cx| {
+                    if let Some(range) = &selection {
+                        buffer.remove(range.clone());
+                        current_offset = range.start;
+                    }
+                    buffer.insert(current_offset, &text);
+                });
+
+                self.cursor_offset = current_offset + text.chars().count();
+                self.selection_anchor = None;
+                cx.notify();
+            }
+            return;
+        }
+
         if event.keystroke.key == "space" {
             self.buffer.update(cx, |buffer, _cx| {
                 buffer.insert(self.cursor_offset, " ");
@@ -61,6 +107,20 @@ impl EditorView {
             self.cursor_offset += 1;
             cx.notify();
             return;
+        }
+
+        let is_shift = event.keystroke.modifiers.shift;
+
+        if matches!(
+            event.keystroke.key.as_str(),
+            "left" | "right" | "up" | "down"
+        ) {
+            if is_shift && self.selection_anchor.is_none() {
+                self.selection_anchor = Some(self.cursor_offset);
+                println!("quadeki\n");
+            } else if !is_shift {
+                self.selection_anchor = None;
+            }
         }
 
         let key = event.keystroke.key.as_str();
@@ -173,6 +233,16 @@ impl EditorView {
         self.cursor_offset = new_offset;
         cx.notify();
     }
+
+    fn selection_range(&self) -> Option<std::ops::Range<usize>> {
+        self.selection_anchor.map(|anchor| {
+            if anchor < self.cursor_offset {
+                anchor..self.cursor_offset
+            } else {
+                self.cursor_offset..anchor
+            }
+        })
+    }
 }
 
 impl Render for EditorView {
@@ -189,27 +259,20 @@ impl Render for EditorView {
             .unwrap_or("Untitled")
             .to_string();
 
-        let mut cursor_line = 0;
-        let mut cursor_col = 0;
+        let selection = self.selection_range();
 
-        for (i, c) in content.char_indices() {
-            if i == self.cursor_offset {
-                break;
-            }
-            if c == '\n' {
-                cursor_line += 1;
-                cursor_col = 0;
-            } else {
-                cursor_col += 1;
-            }
-        }
+        let sel_start = selection.as_ref().map(|r| r.start).unwrap_or(usize::MAX);
+        let sel_end = selection.as_ref().map(|r| r.end).unwrap_or(usize::MAX);
 
         let mut text_container = div().flex().flex_col().w_full();
-
         let lines: Vec<&str> = content.split('\n').collect();
 
+        let mut current_char_idx = 0;
+
         for (line_idx, line_str) in lines.into_iter().enumerate() {
-            // gutter
+            let line_char_count = line_str.chars().count();
+            let line_end_idx = current_char_idx + line_char_count;
+
             let line_number_ui = div()
                 .w(px(45.0))
                 .flex_shrink_0()
@@ -219,38 +282,95 @@ impl Render for EditorView {
                 .pr(px(16.0))
                 .child((line_idx + 1).to_string());
 
-            // container pt intreg randul
-            let mut line_element = div()
+            let mut line_content = div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .h(px(24.0))
                 .child(line_number_ui);
-            if line_idx == cursor_line {
-                let byte_idx = line_str
-                    .char_indices()
-                    .nth(cursor_col)
-                    .map(|(i, _)| i)
-                    .unwrap_or(line_str.len());
-                let (before, after) = line_str.split_at(byte_idx);
 
-                let cursor_ui = div()
-                    .w(px(2.0))
-                    .h(px(18.0))
-                    .bg(rgb(0x89b4fa))
-                    .ml(px(-1.0))
-                    .mr(px(-1.0));
-
-                line_element = line_element
-                    .child(before.to_string())
-                    .child(cursor_ui)
-                    .child(after.to_string());
+            if line_str.is_empty() {
+                if self.cursor_offset == current_char_idx {
+                    let cursor_ui = div()
+                        .w(px(2.0))
+                        .h(px(18.0))
+                        .bg(rgb(0x89b4fa))
+                        .ml(px(-1.0))
+                        .mr(px(-1.0));
+                    line_content = line_content.child(cursor_ui);
+                } else if current_char_idx >= sel_start && current_char_idx < sel_end {
+                    line_content =
+                        line_content.child(div().w(px(8.0)).h(px(18.0)).bg(rgb(0x45475a)));
+                } else {
+                    line_content = line_content.child(" ");
+                }
             } else {
-                let display_text = if line_str.is_empty() { " " } else { line_str };
-                line_element = line_element.child(display_text.to_string());
+                let mut split_points = vec![0, line_char_count];
+
+                if self.cursor_offset > current_char_idx && self.cursor_offset < line_end_idx {
+                    split_points.push(self.cursor_offset - current_char_idx);
+                }
+                if sel_start > current_char_idx && sel_start < line_end_idx {
+                    split_points.push(sel_start - current_char_idx);
+                }
+                if sel_end > current_char_idx && sel_end < line_end_idx {
+                    split_points.push(sel_end - current_char_idx);
+                }
+
+                split_points.sort();
+                split_points.dedup();
+
+                for window in split_points.windows(2) {
+                    let start_char = window[0];
+                    let end_char = window[1];
+                    let global_start = current_char_idx + start_char;
+
+                    if global_start == self.cursor_offset {
+                        let cursor_ui = div()
+                            .w(px(2.0))
+                            .h(px(18.0))
+                            .bg(rgb(0x89b4fa))
+                            .ml(px(-1.0))
+                            .mr(px(-1.0));
+                        line_content = line_content.child(cursor_ui);
+                    }
+
+                    let byte_start = line_str
+                        .char_indices()
+                        .nth(start_char)
+                        .map(|(b, _)| b)
+                        .unwrap_or(line_str.len());
+                    let byte_end = line_str
+                        .char_indices()
+                        .nth(end_char)
+                        .map(|(b, _)| b)
+                        .unwrap_or(line_str.len());
+                    let segment_text = &line_str[byte_start..byte_end];
+
+                    let is_selected = global_start >= sel_start && global_start < sel_end;
+                    let mut text_ui = div().child(segment_text.to_string());
+
+                    if is_selected {
+                        text_ui = text_ui.bg(rgb(0x45475a));
+                    }
+
+                    line_content = line_content.child(text_ui);
+                }
+
+                if self.cursor_offset == line_end_idx {
+                    let cursor_ui = div()
+                        .w(px(2.0))
+                        .h(px(18.0))
+                        .bg(rgb(0x89b4fa))
+                        .ml(px(-1.0))
+                        .mr(px(-1.0));
+                    line_content = line_content.child(cursor_ui);
+                }
             }
 
-            text_container = text_container.child(line_element);
+            text_container = text_container.child(line_content);
+
+            current_char_idx += line_char_count + 1;
         }
 
         div()
